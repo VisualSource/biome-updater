@@ -327,12 +327,10 @@ try {
     Install-Biome -Content $latest.Content
 }
 catch {
-   
-
+    Write-Error $_.Exception.Message
     $exitCode = 1
 }
 finally {
     Stop-Transcript
-
     exit $exitCode
 }
