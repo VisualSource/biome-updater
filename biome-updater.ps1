@@ -1,5 +1,6 @@
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
+
 function Remove-File {
     param (
         $Path
@@ -265,64 +266,73 @@ function Get-LatestVersion {
         Version = $latestVersion
     }
 }
+$exitCode = 0
+try {
+    $biomeFolder = Join-Path -Path $env:USERPROFILE -ChildPath "/biome"
+    $biomeExe = Join-Path -Path $biomeFolder -ChildPath "biome.exe"
 
-$biomeFolder = Join-Path -Path $env:USERPROFILE -ChildPath "/biome"
-$biomeExe = Join-Path -Path $biomeFolder -ChildPath "biome.exe"
+    if (-not (Test-Path -Path $biomeFolder)) {
+        mkdir $biomeFolder
+    }
 
-if (-not (Test-Path -Path $biomeFolder)) {
-    mkdir $biomeFolder
-}
+    Start-Transcript -Path "$(Join-Path -Path $biomeFolder -ChildPath 'updater.log')" -Append -NoClobber
+    Install-Task -ScriptFolder $biomeFolder -Script 'biome-updater.ps1'
 
-Start-Transcript -Path "$(Join-Path -Path $biomeFolder -ChildPath 'updater.log')" -Append -NoClobber
-Install-Task -ScriptFolder $biomeFolder -Script 'biome-updater.ps1'
+    if (!(Get-Command biome.exe -ErrorAction SilentlyContinue)) {
+        $latest = Get-LatestVersion
+        if ($null -eq $latest) {
+            throw 'Failed to fetch latest biome version from github'
+        }
 
-if (!(Get-Command biome.exe -ErrorAction SilentlyContinue)) {
+        $result = [System.Windows.Forms.MessageBox]::Show(
+            "Biome has version ${$latest.Version} (Current 'None') Would you like to Install?", 
+            "Biome updater", 
+            [System.Windows.Forms.MessageBoxButtons]::OKCancel)
+
+        if (!($result -eq [System.Windows.Forms.DialogResult]::Ok)) {
+            Write-Host "Install was declined"
+            return
+        }
+
+        Write-Host "Installing Biome V$($latest.Version)"
+        Install-Biome -Content $latest.Content
+        return
+    }
+    $cliOutput = biome --version
+    $currentBiomeVersion = $cliOutput.Replace("Version: ", "")#>
+
+    Write-Host "Installed Biome Version: $($currentBiomeVersion)"
+    Write-Host "Install directory: $($biomeFolder)"
+
     $latest = Get-LatestVersion
+
     if ($null -eq $latest) {
-        Write-Error 'Failed to get latest'
+        throw 'Failed to fetch latest biome version from github'
+    }
+
+    if ($latest.Version -eq $currentBiomeVersion) {
+        Write-Host "Biome is at latest" 
         return
     }
 
     $result = [System.Windows.Forms.MessageBox]::Show(
-        "Biome has version ${$latest.Version} (Current 'None') Would you like to Install?", 
-        "Biome updater", 
+        "Biome has version ${$latest.Version} (Current ${currentBiomeVersion}) Would you like to Update?", 
+        "Biome update", 
         [System.Windows.Forms.MessageBoxButtons]::OKCancel)
 
     if (!($result -eq [System.Windows.Forms.DialogResult]::Ok)) {
-        Write-Host "Install was declined"
+        Write-Host "Update was declined"
         return
-    }
-
-    Write-Host "Installing Biome V$($latest.Version)"
+    }#
     Install-Biome -Content $latest.Content
-    return 
 }
-$cliOutput = biome --version
-$currentBiomeVersion = $cliOutput.Replace("Version: ", "")#>
+catch {
+   
 
-Write-Host "Installed Biome Version: $($currentBiomeVersion)"
-Write-Host "Install directory: $($biomeFolder)"
-
-$latest = Get-LatestVersion
-
-if ($null -eq $latest) {
-    Write-Error 'Failed to get latest'
-    return
+    $exitCode = 1
 }
+finally {
+    Stop-Transcript
 
-if ($latest.Version -eq $currentBiomeVersion) {
-    Write-Host "Biome is at latest" 
-    return
+    exit $exitCode
 }
-
-$result = [System.Windows.Forms.MessageBox]::Show(
-    "Biome has version ${$latest.Version} (Current ${currentBiomeVersion}) Would you like to Update?", 
-    "Biome update", 
-    [System.Windows.Forms.MessageBoxButtons]::OKCancel)
-
-if (!($result -eq [System.Windows.Forms.DialogResult]::Ok)) {
-    Write-Host "Update was declined"
-    return
-}#
-Install-Biome -Content $latest.Content
-
