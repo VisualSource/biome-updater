@@ -1,3 +1,7 @@
+param(
+    [switch]$Uninstall = $false
+)
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -36,7 +40,6 @@ function Install-Task {
     $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings
 
     Register-ScheduledTask -TaskName 'BiomeUpdater' -InputObject $task -User $user
-    #Unregister-ScheduledTask -TaskName 'BiomeUpdater'
 }
 
 # https://gist.github.com/ChrisStro/37444dd012f79592080bd46223e27adc
@@ -257,7 +260,7 @@ function Get-LatestVersion {
     }
 
     $content = $response.Content | ConvertFrom-Json
-    $latestVersion = $content.tag_name.Replace("@biomejs/biome@", "")
+    $latestVersion = ($content.tag_name.Replace("@biomejs/biome@", "") | Out-String).Trim() | Out-String
 
     Write-Host "Latest git tag found $($latestVersion)"
 
@@ -276,6 +279,12 @@ try {
     }
 
     Start-Transcript -Path "$(Join-Path -Path $biomeFolder -ChildPath 'updater.log')" -Append -NoClobber
+    
+    if ($Uninstall) {
+        Unregister-ScheduledTask -TaskName 'BiomeUpdater'
+        return 
+    }
+    
     Install-Task -ScriptFolder $biomeFolder -Script 'biome-updater.ps1'
 
     if (!(Get-Command biome.exe -ErrorAction SilentlyContinue)) {
@@ -298,9 +307,7 @@ try {
         Install-Biome -Content $latest.Content
         return
     }
-    $cliOutput = biome --version
-    $currentBiomeVersion = $cliOutput.Replace("Version: ", "")#>
-
+    $currentBiomeVersion = ((biome --version).Replace("Version: ", "") | Out-String ).Trim() | Out-String
     Write-Host "Installed Biome Version: $($currentBiomeVersion)"
     Write-Host "Install directory: $($biomeFolder)"
 
@@ -310,13 +317,16 @@ try {
         throw 'Failed to fetch latest biome version from github'
     }
 
-    if ($latest.Version -eq $currentBiomeVersion) {
+    [version]$cb = $currentBiomeVersion
+    [version]$lb = $latest.Version
+
+    if ($lb.Major -eq $cb.Major -and $lb.Minor -eq $cb.Minor -and $lb.Build -eq $cb.Build) {
         Write-Host "Biome is at latest" 
         return
     }
 
     $result = [System.Windows.Forms.MessageBox]::Show(
-        "Biome has version ${$latest.Version} (Current ${currentBiomeVersion}) Would you like to Update?", 
+        "Biome has version $($latest.Version) (Current $($currentBiomeVersion)) Would you like to Update?", 
         "Biome update", 
         [System.Windows.Forms.MessageBoxButtons]::OKCancel)
 
