@@ -1,20 +1,18 @@
 param(
     [switch]$Uninstall = $false,
     [switch]$NoSchedule = $false,
-    [switch]$Setup = $false,
-    [switch]$Debug = $false
+    [switch]$Setup = $false
 )
 
 Add-Type -AssemblyName System.Windows.Forms
 
 function Remove-File {
     param (
-        $Path,
-        $Debug = $false
+        $Path
     )
 
     if (Test-Path -Path $Path) {
-        Remove-Item -Path $Path -Force -WhatIf $Debug
+        Remove-Item -Path $Path -Force
     }
 }
 
@@ -43,8 +41,7 @@ function Install-Task {
 
 function Install-Biome {
     param (
-        $Content,
-        [switch]$Debug = $false
+        $Content
     )
 
     try {
@@ -64,7 +61,8 @@ function Install-Biome {
         Write-Host "Writing file to: $($outfile)"
 
         $updater = New-Object System.Diagnostics.ProcessStartInfo
-        $updater.FileName = "./bin/Debug/net9.0-windows/updater.exe"
+        $updater.WorkingDirectory = $biomeFolder
+        $updater.FileName = "updater.exe"
         $updater.RedirectStandardError = $true
         $updater.RedirectStandardOutput = $true   
         $updater.UseShellExecute = $false
@@ -78,7 +76,6 @@ function Install-Biome {
         $stderr = $c.StandardError.ReadToEnd()
  
         if ($c.ExitCode -ne 0) {
-            Write-Host 
             throw $stderr
         } else {
             Write-Host $stdout
@@ -173,7 +170,7 @@ function Start-Updater {
         return
     }
 
-    Install-Biome -Content $latest.Content -Debug $Debug
+    Install-Biome -Content $latest.Content
 }
 
 $exitCode = 0
@@ -191,7 +188,7 @@ try {
 
     if ($Uninstall) {
         Unregister-ScheduledTask -TaskName 'BiomeUpdater'
-        Remove-Item -Path $biomeFolder -Recurse -WhatIf $Debug
+        Remove-Item -Path $biomeFolder -Recurse
         return 
     }
 
@@ -201,15 +198,15 @@ try {
         }
 
         $archive = Join-Path -Path $biomeFolder -ChildPath 'BiomeUpdater.zip'
-        Invoke-WebRequest -Uri 'https://github.com/' -OutFile $archive
+        Invoke-WebRequest -Uri 'https://github.com/VisualSource/biome-updater/releases/download/v0.0.1/BiomeUpdater.zip' -OutFile $archive
         $result = Get-FileHash -Path $archive -Algorithm 'SHA256'
 
         if (!("12EFFB507E9EA5AC400F7D3AE1D811BD57D920D5C22C5D79B9C8B61838A4A026" -eq $result.Hash)) {
             throw "file hash did not match download file! Was expecting '12EFFB507E9EA5AC400F7D3AE1D811BD57D920D5C22C5D79B9C8B61838A4A026' but got '$($result.Hash)'"
         }
 
-        Expand-Archive -Path $archive -DestinationPath $biomeFolder -WhatIf $Debug
-        Remove-File -Path $archive -Debug $Debug
+        Expand-Archive -Path $archive -DestinationPath $biomeFolder
+        Remove-File -Path $archive
     }
     
     Start-Updater
