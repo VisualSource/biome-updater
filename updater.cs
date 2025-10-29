@@ -1,10 +1,28 @@
 using System;
+using System.IO;
+using System.Windows;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using System.IO;
-using System.Windows;
 using System.Windows.Markup;
+public struct DownloadProgress
+{
+    public static double ToMB(double bytes)
+    {
+        return Math.Round(bytes / Math.Pow(1024, 2), 2);
+    }
+
+    public DownloadProgress(double currentBytes, double totalBytes, double progress)
+    {
+        TotalMB = ToMB(totalBytes);
+        CurrentMB = ToMB(currentBytes);
+        Progress = (progress - 0) * (100 - 0) / (1 - 0);
+    }
+
+    public double TotalMB;
+    public double CurrentMB;
+    public double Progress;
+}
 
 public static class StreamExtensions
 {
@@ -31,7 +49,7 @@ public static class StreamExtensions
 
 public static class HttpClientExtensions
 {
-    public static async Task DownloadAsync(this HttpClient client, string uri, Stream destination, IProgress<float> progress, CancellationToken cancellationToken)
+    public static async Task DownloadAsync(this HttpClient client, string uri, Stream destination, IProgress<DownloadProgress> progress, CancellationToken cancellationToken)
     {
         using (var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead))
         {
@@ -43,8 +61,10 @@ public static class HttpClientExtensions
                     await download.CopyToAsync(destination);
                     return;
                 }
+                
 
-                var relativeProgress = new Progress<long>(totalBytes => progress.Report((float)totalBytes / contentLength.Value));
+                // (float)totalBytes / contentLength.Value)
+                var relativeProgress = new Progress<long>(totalBytes => progress.Report(new DownloadProgress(  totalBytes,contentLength.Value,(double)totalBytes/contentLength.Value)));
                 await download.CopyToAsync(destination, 81920, relativeProgress, cancellationToken);
             }
         }
@@ -56,7 +76,7 @@ namespace BiomeUpdater
     public class FileHandler : Application
     {
         private CancellationTokenSource source = new CancellationTokenSource();
-        private IProgress<float> progress = null;
+        private IProgress<DownloadProgress> progress = null;
 
         private Window window;
 
@@ -82,12 +102,12 @@ namespace BiomeUpdater
                         <ProgressBar Grid.Row='0' Grid.Column='0' Width='200' Height='40' Name='progressBar'></ProgressBar>
                         <Label Name='progressLabel' Content='Staring...' Grid.Row='1' Grid.Column='0' Margin='35,0,0,0'/>
                     </Grid>
-            </Window>
+                </Window>
             ";
 
             window = (Window)XamlReader.Parse(xaml);
 
-            window.Closed += (object sender, System.EventArgs e) =>
+            window.Closed += (object sender, EventArgs e) =>
             {
                 Cancel();
             };
@@ -99,10 +119,8 @@ namespace BiomeUpdater
             {
                 Application.Current.Dispatcher.BeginInvoke(() =>
                 {
-                    float norm = value / 1;
-
-                    progressBar.Value += norm * 100;
-                    progressLabel.Content = $"{value} of 1";
+                    progressBar.Value = value.Progress;
+                    progressLabel.Content = $"{value.CurrentMB}MB of {value.TotalMB}MB";
                 });
             });
 
@@ -110,35 +128,48 @@ namespace BiomeUpdater
         }
 
         [STAThread]
-        public static void Main(string[] args)
+        public static int Main(string[] args)
         {
-            if (args.Length < 3) throw new ArgumentOutOfRangeException("expected 3 args");
-
-            string url = args[1];
-            string path = args[2];
-
-            var app = new FileHandler();
-
-            var thread = new Thread(() =>
+            try
             {
-                Thread.Sleep(2000);
+                if (args.Length < 2) throw new ArgumentOutOfRangeException("expected 2 args");
 
-                Task.Run(() => app.StartDownload(url, path)).Wait();
+                string url = args[0];
+                string path = args[1];
 
-                Thread.Sleep(2000);
+                if (!url.StartsWith("https://github.com/biomejs/biome/releases/download")) throw new ArgumentException("Invalid download url");
+                Console.WriteLine($"Writing file to: {path}");
 
-                Application.Current.Dispatcher.Invoke(() =>
+                var app = new FileHandler();
+
+                var thread = new Thread(() =>
                 {
-                    app.window.Close();
-                });
-            });
+                    Thread.Sleep(2000);
 
-            thread.Start();
-            app.Run();
+                    Task.Run(() => app.StartDownload(url, path)).Wait();
+
+                    Thread.Sleep(2000);
+
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        app.window.Close();
+                    });
+                });
+
+                thread.Start();
+                app.Run();
+
+                return 0;
+            }
+            catch (System.Exception e)
+            {
+                Console.WriteLine(e.Message);
+                return 1;
+            }
         }
-        public void SetProgress(Action<float> callback)
+        public void SetProgress(Action<DownloadProgress> callback)
         {
-            progress = new Progress<float>(callback);
+            progress = new Progress<DownloadProgress>(callback);
         }
 
         public void Cancel()

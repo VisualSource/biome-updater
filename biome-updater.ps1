@@ -1,17 +1,20 @@
 param(
-    [switch]$Uninstall = $false
+    [switch]$Uninstall = $false,
+    [switch]$NoSchedule = $false,
+    [switch]$Setup = $false,
+    [switch]$Debug = $false
 )
 
-Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
 function Remove-File {
     param (
-        $Path
+        $Path,
+        $Debug = $false
     )
 
     if (Test-Path -Path $Path) {
-        Remove-Item -Path $Path -Force
+        Remove-Item -Path $Path -Force -WhatIf $Debug
     }
 }
 
@@ -21,15 +24,11 @@ function Install-Task {
         [string]$Script
     )
 
+    Write-Host "Debug" $ScriptFolder $Script
+
     if (Get-ScheduledTask -TaskName 'BiomeUpdater' -ErrorAction SilentlyContinue) {
         Write-Host "Task 'BiomeUpdater' already registered"
         return 
-    }
-
-    $scriptPath = Join-Path -Path $ScriptFolder -ChildPath $Script
-    if (-not (Test-Path -Path $scriptPath)) {
-        Write-Host "Copying Invocation to script folder"
-        Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath
     }
 
     Write-Host "Registering Task 'BiomeUpdater'"
@@ -39,175 +38,13 @@ function Install-Task {
     $user = $env:USERNAME
     $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings
 
-    Register-ScheduledTask -TaskName 'BiomeUpdater' -InputObject $task -User $user
-}
-
-# https://gist.github.com/ChrisStro/37444dd012f79592080bd46223e27adc
-function Get-FileFromWeb {
-    param (
-        # Parameter help description
-        [Parameter(Mandatory)]
-        [string]$URL,
-  
-        # Parameter help description
-        [Parameter(Mandatory)]
-        [string]$File 
-    )
- 
-    try {
-        $syncTable = [hashtable]::Synchronized(@{})
-        $syncTable.Close = $false
-
-        $runspace = [runspacefactory]::CreateRunspace()
-        $runspace.ApartmentState = "STA"
-        $runspace.ThreadOptions = "ReuseThread"
-        $runspace.Name = "BiomeUpdater"
-        $runspace.Open()
-        $runspace.SessionStateProxy.SetVariable("syncTable", $syncTable)
-
-        $scriptBlock = [scriptblock]::Create({
-
-                [xml]$xaml = 
-                @"    
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Biome Updater" 
-        Height="100" 
-        Width="300" 
-        ResizeMode="NoResize">
-   <Grid Margin="5,5,5,5">
-     <Grid.ColumnDefinitions>
-       <ColumnDefinition />
-     </Grid.ColumnDefinitions>
-     <Grid.RowDefinitions>
-       <RowDefinition />
-       <RowDefinition />
-     </Grid.RowDefinitions>
-     <ProgressBar Grid.Row="0" Grid.Column="0" Width="200" Height="40" Name="progressBar"></ProgressBar>
-     <Label Name="progressLabel" Content="Staring..." Grid.Row="1" Grid.Column="0" Margin="35,0,0,0"/>
-  </Grid>
-</Window>
-"@ 
-                $xamlReader = (New-Object System.Xml.XmlNodeReader $xaml)
-                $window = [Windows.Markup.XamlReader]::Load( $xamlReader );
-
-                $progressBar = $window.FindName("progressBar")
-                $label = $window.FindName("progressLabel")
-                $syncTable.Window = $window
-                $syncTable.ProgressBar = $progressBar
-                $syncTable.Label = $label
-          
-                $window.Add_Closing({
-                        param($Sender, $Exit)
-                        $syncTable.Close = $true
-                    })
-
-                $window.ShowDialog() | Out-Null
-
-                $syncTable.Window = $null
-            })
-        
-        $pipe = $runspace.CreatePipeline($scriptBlock)
-        $pipe.InvokeAsync()
-        
-        Start-Sleep -Seconds 2
-
-        $storeEAP = $ErrorActionPreference
-        $ErrorActionPreference = 'Stop'
-
-        # invoke request
-        $request = [System.Net.HttpWebRequest]::Create($URL)
-        $response = $request.GetResponse()
-
-        if ($response.StatusCode -eq 401 -or $response.StatusCode -eq 403 -or $response.StatusCode -eq 404) {
-            throw "Remote file either doesn't exist, is unauthorized, or is forbidden for '$URL'."
-        }
-
-        if ($File -match '^\.\\') {
-            $File = Join-Path (Get-Location -PSProvider "FileSystem") ($File -Split '^\.')[1]
-        }
-            
-        if ($File -and !(Split-Path $File)) {
-            $File = Join-Path (Get-Location -PSProvider "FileSystem") $File
-        }
-
-        if ($File) {
-            $fileDirectory = $([System.IO.Path]::GetDirectoryName($File))
-            if (!(Test-Path($fileDirectory))) {
-                [System.IO.Directory]::CreateDirectory($fileDirectory) | Out-Null
-            }
-        }
-
-        [long]$fullSize = $response.ContentLength
-        $fullSizeMB = $fullSize / 1024 / 1024
-  
-        # define buffer
-        [byte[]]$buffer = new-object byte[] 1048576
-        [long]$total = [long]$count = 0
-
-        # create reader / writer
-        $reader = $response.GetResponseStream()
-        $writer = new-object System.IO.FileStream $File, "Create"
-
-        $frame = 0
-
-        do {
-            if ($syncTable.Close -eq $true) {
-                break
-            }
-           
-            $frame++
-            $count = $reader.Read($buffer, 0, $buffer.Length)
-            $writer.Write($buffer, 0, $count)
-              
-            $total += $count
-            $totalMB = $total / 1024 / 1024
-
-            $percent = $totalMB / $fullSizeMB
-            $percentComplete = $percent * 100
-
-            if ($frame -gt 12) {
-                $frame = 0
-                if (-not $syncTable.Window -eq $null) {
-                    $syncTable.Window.Dispatcher.Invoke([Action] {
-                            $syncTable.ProgressBar.Value = $percentComplete
-                            $syncTable.Label.Content = "Progress: $([math]::Round($totalMB,2))MB Of $([math]::Round($fullSizeMB,2))MB"
-                        }, "Background")
-                }
-            }                 
-        } while ($count -gt 0)
-
-        Write-Debug "Finished downloading"
-
-        return -not $syncTable.Close
-    }
-    catch {
-        $ExceptionMsg = $_.Exception.Message
-        Write-Error "Download breaks with error : $ExceptionMsg"
-        return $false
-    }
-    finally {
-        # cleanup
-        Write-Debug "Cleanup reader/writer"
-        if ($reader) { $reader.Close() }
-        if ($writer) { $writer.Flush(); $writer.Close() }
-        
-        $ErrorActionPreference = $storeEAP
-        Write-Debug "GC"
-        [GC]::Collect()
-        Write-Debug "Close Window if Needed"
-        if (-not $syncTable.Window -eq $null) {
-            $syncTable.Window.Dispatcher.Invoke([Action] {
-                    $syncTable.Window.Close()
-                })
-        }
-        $runspace.Dispose()
-    }    
+    Register-ScheduledTask -TaskName 'BiomeUpdater' -InputObject $task -User $user | Out-Null
 }
 
 function Install-Biome {
     param (
-        $Content
+        $Content,
+        [switch]$Debug = $false
     )
 
     try {
@@ -223,11 +60,28 @@ function Install-Biome {
         $outfile = Join-Path -Path $biomeFolder -ChildPath $item.name
 
         Remove-File -Path $outfile
+        Write-Host "Downloading file from: $($item.browser_download_url)"
+        Write-Host "Writing file to: $($outfile)"
 
-        $finished = Get-FileFromWeb -URL $item.browser_download_url -File $outfile
+        $updater = New-Object System.Diagnostics.ProcessStartInfo
+        $updater.FileName = "./bin/Debug/net9.0-windows/updater.exe"
+        $updater.RedirectStandardError = $true
+        $updater.RedirectStandardOutput = $true   
+        $updater.UseShellExecute = $false
+        $updater.Arguments = "$($item.browser_download_url) $($outfile)"    
 
-        if (-not $finished) {
-            throw 'Did not finished downloading'
+        $c = New-Object System.Diagnostics.Process 
+        $c.StartInfo = $updater
+        $c.Start() | Out-Null
+        $c.WaitForExit()
+        $stdout = $c.StandardOutput.ReadToEnd()
+        $stderr = $c.StandardError.ReadToEnd()
+ 
+        if ($c.ExitCode -ne 0) {
+            Write-Host 
+            throw $stderr
+        } else {
+            Write-Host $stdout
         }
 
         $result = Get-FileHash -Path $outfile -Algorithm $alg
@@ -260,7 +114,7 @@ function Get-LatestVersion {
     }
 
     $content = $response.Content | ConvertFrom-Json
-    $latestVersion = ($content.tag_name.Replace("@biomejs/biome@", "") | Out-String).Trim() | Out-String
+    [string]$latestVersion = $content.tag_name.Replace("@biomejs/biome@", "").Trim("`r","`n","`f",' ')
 
     Write-Host "Latest git tag found $($latestVersion)"
 
@@ -269,24 +123,8 @@ function Get-LatestVersion {
         Version = $latestVersion
     }
 }
-$exitCode = 0
-try {
-    $biomeFolder = Join-Path -Path $env:USERPROFILE -ChildPath "/biome"
-    $biomeExe = Join-Path -Path $biomeFolder -ChildPath "biome.exe"
 
-    if (-not (Test-Path -Path $biomeFolder)) {
-        mkdir $biomeFolder
-    }
-
-    Start-Transcript -Path "$(Join-Path -Path $biomeFolder -ChildPath 'updater.log')" -Append -NoClobber
-    
-    if ($Uninstall) {
-        Unregister-ScheduledTask -TaskName 'BiomeUpdater'
-        return 
-    }
-    
-    Install-Task -ScriptFolder $biomeFolder -Script 'biome-updater.ps1'
-
+function Start-Updater {
     if (!(Get-Command biome.exe -ErrorAction SilentlyContinue)) {
         $latest = Get-LatestVersion
         if ($null -eq $latest) {
@@ -294,9 +132,9 @@ try {
         }
 
         $result = [System.Windows.Forms.MessageBox]::Show(
-            "Biome has version ${$latest.Version} (Current 'None') Would you like to Install?", 
-            "Biome updater", 
-            [System.Windows.Forms.MessageBoxButtons]::OKCancel)
+                "Whould you like to install biome?", 
+                "Biome updater", 
+                [System.Windows.Forms.MessageBoxButtons]::OKCancel)
 
         if (!($result -eq [System.Windows.Forms.DialogResult]::Ok)) {
             Write-Host "Install was declined"
@@ -307,9 +145,9 @@ try {
         Install-Biome -Content $latest.Content
         return
     }
-    $currentBiomeVersion = ((biome --version).Replace("Version: ", "") | Out-String ).Trim() | Out-String
+
+    [string]$currentBiomeVersion = ((biome --version).Replace('Version: ','').Trim("`r","`f","`n", ' '))
     Write-Host "Installed Biome Version: $($currentBiomeVersion)"
-    Write-Host "Install directory: $($biomeFolder)"
 
     $latest = Get-LatestVersion
 
@@ -326,15 +164,55 @@ try {
     }
 
     $result = [System.Windows.Forms.MessageBox]::Show(
-        "Biome has version $($latest.Version) (Current $($currentBiomeVersion)) Would you like to Update?", 
+        "Biome has version $($latest.Version) (Current $($currentBiomeVersion))`n Would you like to Update?", 
         "Biome update", 
         [System.Windows.Forms.MessageBoxButtons]::OKCancel)
 
     if (!($result -eq [System.Windows.Forms.DialogResult]::Ok)) {
         Write-Host "Update was declined"
         return
-    }#
-    Install-Biome -Content $latest.Content
+    }
+
+    Install-Biome -Content $latest.Content -Debug $Debug
+}
+
+$exitCode = 0
+try {
+    $biomeFolder = Join-Path -Path $env:USERPROFILE -ChildPath "/biome"
+    $biomeExe = Join-Path -Path $biomeFolder -ChildPath "biome.exe"
+
+    if (-not (Test-Path -Path $biomeFolder)) {
+        mkdir $biomeFolder
+    }
+    Write-Host "Install directory: $($biomeFolder)"
+
+    $logPath = Join-Path -Path $biomeFolder -ChildPath 'updater.log'
+    Start-Transcript -Path $logPath -Append -NoClobber
+
+    if ($Uninstall) {
+        Unregister-ScheduledTask -TaskName 'BiomeUpdater'
+        Remove-Item -Path $biomeFolder -Recurse -WhatIf $Debug
+        return 
+    }
+
+    if($Setup){
+        if(-not $NoSchedule) {
+            Install-Task -ScriptFolder $biomeFolder -Script 'biome-updater.ps1'
+        }
+
+        $archive = Join-Path -Path $biomeFolder -ChildPath 'BiomeUpdater.zip'
+        Invoke-WebRequest -Uri 'https://github.com/' -OutFile $archive
+        $result = Get-FileHash -Path $archive -Algorithm 'SHA256'
+
+        if (!("12EFFB507E9EA5AC400F7D3AE1D811BD57D920D5C22C5D79B9C8B61838A4A026" -eq $result.Hash)) {
+            throw "file hash did not match download file! Was expecting '12EFFB507E9EA5AC400F7D3AE1D811BD57D920D5C22C5D79B9C8B61838A4A026' but got '$($result.Hash)'"
+        }
+
+        Expand-Archive -Path $archive -DestinationPath $biomeFolder -WhatIf $Debug
+        Remove-File -Path $archive -Debug $Debug
+    }
+    
+    Start-Updater
 }
 catch {
     Write-Error $_.Exception.Message
